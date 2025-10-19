@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hoops Lounge – Interactive Walkthrough (Draft v1)</title>
+<style>
+  html, body { margin:0; height:100%; background:#0a0a0c; overflow:hidden; }
+  #ui {
+    position: fixed; top: 12px; right: 12px;
+    background: rgba(10,12,16,.8);
+    color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 12px; padding: 12px 14px; z-index:10;
+    backdrop-filter: blur(6px);
+  }
+  #ui h1 { font-size: 14px; margin: 0 0 8px; font-weight:600; letter-spacing:.2px; }
+  #ui button {
+    display:block; width:100%; margin:6px 0; padding:10px 12px; border-radius:10px;
+    background:#0e2a72; color:#fff; border:1px solid #2c4fa3; cursor:pointer; font-weight:600;
+  }
+  #ui button:hover { background:#12368f; }
+  #help {
+    position: fixed; left: 12px; bottom: 12px; color:#e8eefc; opacity:.9;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: rgba(10,12,16,.6); padding: 10px 12px; border-radius: 10px; font-size: 13px;
+    border:1px solid rgba(255,255,255,.1);
+  }
+  .brand { color:#ff6b00; }
+  .muted { color:#a9b3c9; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>Hoops Lounge <span class="brand">Walkthrough</span></h1>
+  <button id="enter">Enter / Pointer Lock</button>
+  <button id="startAudio">🔊 Toggle Audio</button>
+  <button id="tpEntrance">⤴ Teleport: Entrance</button>
+  <button id="tpBalcony">⤴ Teleport: Balcony</button>
+  <button id="tpHalfCourts">⤴ Teleport: Half Courts (L2)</button>
+</div>
+<div id="help">
+  <div><b>Controls</b>: Click canvas + <b>Enter</b> to lock pointer • <b>WASD</b> move • <b>Space</b> jump • <b>Shift</b> run</div>
+  <div class="muted">Brand: white / blue / <span class="brand">orange</span> • First-person • Ambient audio • 2 floors</div>
+</div>
+<canvas id="c"></canvas>
+
+<script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.158.0/examples/js/controls/PointerLockControls.js"></script>
+
+<script>
+(() => {
+  // Brand colours
+  const BLUE = 0x0047AB, ORANGE = 0xFF6B00, WHITE = 0xFFFFFF, CONCRETE = 0x1a1d25;
+
+  // Scene basics
+  const canvas = document.getElementById('c');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0c);
+  const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 500);
+  camera.position.set(5, 1.75, 8);
+
+  // Lighting
+  const hemi = new THREE.HemisphereLight(0xeaf2ff, 0x0a0a0c, 0.5);
+  scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+  dir.position.set(40, 30, 20);
+  dir.castShadow = true;
+  scene.add(dir);
+
+  // Pointer lock controls
+  const controls = new THREE.PointerLockControls(camera, document.body);
+  const enterBtn = document.getElementById('enter');
+  enterBtn.onclick = () => controls.lock();
+  controls.addEventListener('lock', () => { });
+  controls.addEventListener('unlock', () => { });
+
+  // Movement
+  const velocity = new THREE.Vector3();
+  const direction = new THREE.Vector3();
+  const keys = {};
+  let canJump = false;
+  document.addEventListener('keydown', (e) => { keys[e.code] = true; if(e.code === 'Enter'){ controls.lock(); } });
+  document.addEventListener('keyup',   (e) => { keys[e.code] = false; });
+
+  // Floorplate (each floor): 50m x 28m
+  const L = 50, W = 28, H1 = 8.0, H2 = 4.5;
+  const matConcrete = new THREE.MeshStandardMaterial({ color: CONCRETE, roughness: 0.9, metalness: 0.1 });
+  const matWood = new THREE.MeshStandardMaterial({ color: 0xD9B07E, roughness: 0.6, metalness: 0.1 });
+  const matRubber = new THREE.MeshStandardMaterial({ color: 0x20232b, roughness: 1.0, metalness: 0.0 });
+  const matPad = new THREE.MeshStandardMaterial({ color: ORANGE, roughness: 0.7, metalness: 0.0 });
+  const matBlue = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.6, metalness: 0.0 });
+  const matWhite = new THREE.MeshStandardMaterial({ color: 0xf1f5ff, roughness: 0.9, metalness: 0.0 });
+
+  // Ground & Upper slabs
+  function addSlab(y, h, color=CONCRETE) {
+    const geo = new THREE.BoxGeometry(L, 0.1, W);
+    const mat = new THREE.MeshStandardMaterial({color});
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.receiveShadow = true;
+    mesh.position.set(L/2, y + h/2, W/2);
+    scene.add(mesh);
+    return mesh;
+  }
+  const gfSlab = addSlab(0.0, 0.1, 0x111318);
+  const ufSlab = addSlab(H1, 0.1, 0x141720);
+
+  // Perimeter walls (ground level up to H1)
+  const walls = new THREE.Group();
+  function wall(x, y, z, sx, sy, sz) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), new THREE.MeshStandardMaterial({ color: 0x191c24 }));
+    m.castShadow = m.receiveShadow = true;
+    m.position.set(x, y, z);
+    walls.add(m);
+  }
+  const thk = 0.3;
+  wall(L/2, H1/2, thk/2, L, H1, thk);            // South
+  wall(L/2, H1/2, W-thk/2, L, H1, thk);          // North
+  wall(thk/2, H1/2, W/2, thk, H1, W);            // West
+  wall(L-thk/2, H1/2, W/2, thk, H1, W);          // East
+  scene.add(walls);
+
+  // Simple wood pattern on courts (procedural stripes)
+  function makeWoodMaterial(baseColor) {
+    const size = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#d9b07e'; ctx.fillRect(0,0,size,size);
+    ctx.globalAlpha = 0.18;
+    for(let i=0;i<32;i++){
+      ctx.fillStyle = (i%2===0) ? '#c69a6b' : '#e3be92';
+      ctx.fillRect(0, i*(size/32), size, size/32);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(6, 3);
+    return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.55, metalness: 0.05 });
+  }
+  const matCourtWood = makeWoodMaterial(0xD9B07E);
+
+  // ====== Ground Floor: Slamball courts, arcade, Bar 1, kitchen, restrooms, lift, stairs ======
+  const courtZ = 0.08;
+  const sbSize = { x: 22.0, z: 12.5 };
+  const sbA = new THREE.Mesh(new THREE.BoxGeometry(sbSize.x, 0.04, sbSize.z), matCourtWood);
+  sbA.position.set(2.0 + sbSize.x/2, courtZ, 1.5 + sbSize.z/2);
+  scene.add(sbA);
+  const sbB = sbA.clone();
+  sbB.position.set(26.0 + sbSize.x/2, courtZ, 1.5 + sbSize.z/2);
+  scene.add(sbB);
+
+  // Trampoline pits (4 per court)
+  function addTrampPits(originX, originZ){
+    const pits = [];
+    const pitL=3.0, pitW=2.5;
+    const offsets = [
+      [3.0,  sbSize.z/2 - 3.0],
+      [3.0,  sbSize.z/2 + 3.0 - pitW],
+      [sbSize.x - 3.0 - pitL, sbSize.z/2 - 3.0],
+      [sbSize.x - 3.0 - pitL, sbSize.z/2 + 3.0 - pitW]
+    ];
+    offsets.forEach(([ox, oz])=>{
+      const pit = new THREE.Mesh(new THREE.BoxGeometry(pitL, 0.4, pitW), matRubber);
+      pit.position.set(originX+ox+pitL/2, courtZ-0.2, originZ+oz+pitW/2);
+      scene.add(pit);
+      // surface
+      const surf = new THREE.Mesh(new THREE.BoxGeometry(pitL, 0.02, pitW), new THREE.MeshStandardMaterial({color:0x151821}));
+      surf.position.set(originX+ox+pitL/2, courtZ, originZ+oz+pitW/2);
+      scene.add(surf);
+      pits.push(pit);
+    });
+    return pits;
+  }
+  addTrampPits(2.0, 1.5);
+  addTrampPits(26.0, 1.5);
+
+  // Slamball padding rails
+  function addPadRing(cx, cz){
+    const padH=1.2, padT=0.25;
+    const long = new THREE.Mesh(new THREE.BoxGeometry(sbSize.x, padH, padT), matPad);
+    long.position.set(cx, courtZ+padH/2, cz - sbSize.z/2 - padT/2);
+    scene.add(long);
+    const long2 = long.clone(); long2.position.set(cx, courtZ+padH/2, cz + sbSize.z/2 + padT/2); scene.add(long2);
+    const short = new THREE.Mesh(new THREE.BoxGeometry(padT, padH, sbSize.z), matPad);
+    short.position.set(cx - sbSize.x/2 - padT/2, courtZ+padH/2, cz); scene.add(short);
+    const short2 = short.clone(); short2.position.set(cx + sbSize.x/2 + padT/2, courtZ+padH/2, cz); scene.add(short2);
+  }
+  addPadRing(2.0 + sbSize.x/2, 1.5 + sbSize.z/2);
+  addPadRing(26.0 + sbSize.x/2, 1.5 + sbSize.z/2);
+
+  // Hoops (rim + glass backboard + stanchion) both ends of each Slamball court
+  function addHoop(x, z, facing=1){
+    // rim
+    const torus = new THREE.Mesh(new THREE.TorusGeometry(0.23, 0.03, 12, 48), new THREE.MeshStandardMaterial({ color: ORANGE, metalness: 0.0, roughness: 0.8 }));
+    torus.position.set(x, 3.05, z);
+    torus.rotation.y = Math.PI/2;
+    scene.add(torus);
+    // backboard
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.05, 1.8), new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness:0.1, transmission:0.6, transparent:true }));
+    back.position.set(x - facing*0.6, 3.05+0.3, z);
+    scene.add(back);
+    // stanchion
+    const st = new THREE.Mesh(new THREE.BoxGeometry(3.0, 2.0, 0.25), new THREE.MeshStandardMaterial({ color: 0x505560 }));
+    st.position.set(x - facing*1.5, 1.0, z);
+    scene.add(st);
+  }
+  // Slamball A hoops (west/east)
+  addHoop(2.0 + 0.8, 1.5 + sbSize.z/2, +1);
+  addHoop(2.0 + sbSize.x - 0.8, 1.5 + sbSize.z/2, -1);
+  // Slamball B hoops
+  addHoop(26.0 + 0.8, 1.5 + sbSize.z/2, +1);
+  addHoop(26.0 + sbSize.x - 0.8, 1.5 + sbSize.z/2, -1);
+
+  // Arcade zone (between courts)
+  function addArcadeCluster(x, z, rows=2, cols=5, spacing=1.2){
+    const machines = new THREE.Group();
+    const geo = new THREE.BoxGeometry(0.9, 1.6, 0.8);
+    const matBody = new THREE.MeshStandardMaterial({ color: 0x111722, roughness: 0.7, metalness: 0.3, emissive: 0x0b1224, emissiveIntensity: 0.3 });
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<cols;c++){
+        const m = new THREE.Mesh(geo, matBody);
+        m.castShadow = m.receiveShadow = true;
+        m.position.set(x + c*spacing, 0.8, z + r*spacing);
+        machines.add(m);
+      }
+    }
+    scene.add(machines);
+    return machines;
+  }
+  addArcadeCluster(13.5, 16.0, 2, 6, 1.4);
+
+  // Bar 1 (GF)
+  const bar1 = new THREE.Mesh(new THREE.BoxGeometry(12.0, 0.9, 4.0), new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.4, metalness: 0.2 }));
+  bar1.position.set(20.0, 0.5, 20.0);
+  scene.add(bar1);
+
+  // Kitchen / BOH block + Restrooms (GF)
+  const kitchen = new THREE.Mesh(new THREE.BoxGeometry(10.0, 3.0, 6.0), new THREE.MeshStandardMaterial({ color: 0x2b2f38 }));
+  kitchen.position.set(28.0-5.0-0.5, 1.5, 16.0+3.0);
+  scene.add(kitchen);
+  const wcs = new THREE.Mesh(new THREE.BoxGeometry(10.0, 3.0, 5.0), new THREE.MeshStandardMaterial({ color: 0x2b2f38 }));
+  wcs.position.set(28.0-5.0-0.5, 1.5, 23.0+2.5);
+  scene.add(wcs);
+
+  // Lift & stairs cores
+  const lift = new THREE.Mesh(new THREE.BoxGeometry(3.0, H1, 3.0), new THREE.MeshStandardMaterial({ color: 0x424650 }));
+  lift.position.set(8.0, H1/2, 22.0);
+  scene.add(lift);
+  const stairs = new THREE.Mesh(new THREE.BoxGeometry(4.0, H1, 2.5), new THREE.MeshStandardMaterial({ color: 0x3a3f49 }));
+  stairs.position.set(11.0, H1/2, 23.0);
+  scene.add(stairs);
+
+  // ====== Upper Floor: 4 interactive half courts, 2 bars, private rooms, balcony seating ======
+  const ufGroup = new THREE.Group();
+  scene.add(ufGroup);
+
+  // Balcony "void" over Slamball: remove central deck visually by adding railing only
+  function addRailingRect(x, z, lx, lz){
+    const railH = 1.2;
+    const railT = 0.08;
+    const matRail = new THREE.MeshStandardMaterial({ color: BLUE, metalness: 0.6, roughness: 0.4 });
+    const rails = new THREE.Group();
+    const parts = [
+      [lx, railH, railT, x+lx/2, H1+0.7, z- lz/2 - railT/2],  // south
+      [lx, railH, railT, x+lx/2, H1+0.7, z+ lz/2 + railT/2],  // north
+      [railT, railH, lz, x- lx/2 - railT/2, H1+0.7, z],       // west
+      [railT, railH, lz, x+ lx/2 + railT/2, H1+0.7, z]        // east
+    ];
+    parts.forEach(p => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(p[0], p[1], p[2]), matRail);
+      m.position.set(p[3], p[4], p[5]);
+      rails.add(m);
+    });
+    scene.add(rails);
+    return rails;
+  }
+  // Big viewing void centered over Slamball courts
+  addRailingRect(L/2, (1.5 + sbSize.z/2), 32.0, 18.0);
+
+  // Upper floor courts (2x2)
+  const hf = { x:16.0, z:9.0 }, gap=2.0;
+  function addHalfCourt(x, z, name){
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(hf.x, 0.04, hf.z), matCourtWood);
+    floor.position.set(x+hf.x/2, H1+0.08, z+hf.z/2);
+    ufGroup.add(floor);
+    // Paint (rect)
+    const paint = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.02, 4.9), new THREE.MeshStandardMaterial({color: ORANGE, roughness:0.7}));
+    paint.position.set(x+4.5, H1+0.09, z+hf.z/2);
+    ufGroup.add(paint);
+    // Hoop
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.23, 0.03, 12, 48), new THREE.MeshStandardMaterial({color: ORANGE}));
+    rim.position.set(x+1.1, 3.05, z+hf.z/2);
+    rim.rotation.y = Math.PI/2;
+    ufGroup.add(rim);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.05, 1.8), new THREE.MeshPhysicalMaterial({ color: 0xffffff, transmission:0.6, roughness:0.1, transparent:true }));
+    back.position.set(x+0.5, 3.35, z+hf.z/2);
+    ufGroup.add(back);
+  }
+  // positions
+  const baseX = 2.0, baseZ = 2.0;
+  addHalfCourt(baseX, baseZ, "Half1");
+  addHalfCourt(baseX, baseZ + hf.z + gap, "Half2");
+  addHalfCourt(baseX + hf.x + gap, baseZ, "Half3");
+  addHalfCourt(baseX + hf.x + gap, baseZ + hf.z + gap, "Half4");
+
+  // Bars (upper)
+  const bar2 = new THREE.Mesh(new THREE.BoxGeometry(10.0, 0.9, 4.0), new THREE.MeshStandardMaterial({ color: BLUE }));
+  bar2.position.set(6.5, H1+0.5, 24.0); ufGroup.add(bar2);
+  const bar3 = new THREE.Mesh(new THREE.BoxGeometry(10.0, 0.9, 4.0), new THREE.MeshStandardMaterial({ color: BLUE }));
+  bar3.position.set(19.5, H1+0.5, 24.0); ufGroup.add(bar3);
+
+  // Private rooms + seating zone
+  const prvA = new THREE.Mesh(new THREE.BoxGeometry(10.0, 3.0, 8.0), new THREE.MeshStandardMaterial({ color: 0x232732 }));
+  prvA.position.set(26.0+5.0, H1+1.5, 1.5+4.0); ufGroup.add(prvA);
+  const prvB = new THREE.Mesh(new THREE.BoxGeometry(10.0, 3.0, 6.0), new THREE.MeshStandardMaterial({ color: 0x232732 }));
+  prvB.position.set(26.0+5.0, H1+1.5, 10.0+3.0); ufGroup.add(prvB);
+  const seating = new THREE.Mesh(new THREE.BoxGeometry(10.0, 0.5, 8.0), new THREE.MeshStandardMaterial({ color: 0x2e3340 }));
+  seating.position.set(26.0+5.0, H1+0.3, 17.0+4.0); ufGroup.add(seating);
+
+  // Ground-level entrance spawn
+  const spawnEntrance = new THREE.Vector3(5, 1.75, 8);
+  const spawnBalcony  = new THREE.Vector3(L/2, H1+1.7, (1.5 + sbSize.z/2) - 8);
+  const spawnHalf     = new THREE.Vector3(baseX + hf.x, H1+1.7, baseZ + hf.z*1.5);
+
+  // Simple "physics" ground
+  const objects = [];
+  const blocker = new THREE.Box3(new THREE.Vector3(0,0,0), new THREE.Vector3(L, 0.2, W));
+  objects.push(blocker);
+
+  let prevTime = performance.now();
+
+  function animate(){
+    requestAnimationFrame(animate);
+    const time = performance.now();
+    const delta = (time - prevTime) / 1000;
+    const speed = keys['ShiftLeft'] ? 9 : 5;
+
+    velocity.x -= velocity.x * 8.0 * delta;
+    velocity.z -= velocity.z * 8.0 * delta;
+    velocity.y -= 9.8 * 6.0 * delta; // gravity
+
+    direction.z = Number(keys['KeyW']) - Number(keys['KeyS']);
+    direction.x = Number(keys['KeyD']) - Number(keys['KeyA']);
+    direction.normalize();
+
+    if (controls.isLocked) {
+      if (keys['KeyW'] || keys['KeyS']) velocity.z -= direction.z * speed * 100.0 * delta;
+      if (keys['KeyA'] || keys['KeyD']) velocity.x -= direction.x * speed * 100.0 * delta;
+      if (keys['Space'] && canJump) { velocity.y += 350; canJump = false; }
+
+      controls.moveRight(- velocity.x * delta);
+      controls.moveForward(- velocity.z * delta);
+
+      camera.position.y += velocity.y * delta;
+      if (camera.position.y < 1.75) { velocity.y = 0; camera.position.y = 1.75; canJump = true; }
+      // keep within shell
+      camera.position.x = Math.max(1, Math.min(L-1, camera.position.x));
+      camera.position.z = Math.max(1, Math.min(W-1, camera.position.z));
+    }
+
+    renderer.render(scene, camera);
+    prevTime = time;
+  }
+  animate();
+
+  // UI teleport
+  function teleportTo(v){
+    camera.position.copy(v);
+    camera.rotation.set(0,0,0);
+  }
+  document.getElementById('tpEntrance').onclick = ()=> teleportTo(spawnEntrance);
+  document.getElementById('tpBalcony').onclick  = ()=> teleportTo(spawnBalcony);
+  document.getElementById('tpHalfCourts').onclick=()=> teleportTo(spawnHalf);
+
+  // Start at entrance
+  teleportTo(spawnEntrance);
+
+  // ----------- WebAudio: ambient + positional zones -----------
+  let audioOn = false;
+  const startAudioBtn = document.getElementById('startAudio');
+
+  // Create audio context + layers
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioContext();
+  ctx.suspend(); // start paused
+
+  // Master gain
+  const master = ctx.createGain();
+  master.gain.value = 0.35;
+  master.connect(ctx.destination);
+
+  // Ambient music (synth pad via oscillators)
+  function makePad(freq, detune){
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = freq;
+    osc.detune.value = detune;
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'lowpass'; filt.frequency.value = 800;
+    const gain = ctx.createGain(); gain.gain.value = 0.06;
+    osc.connect(filt).connect(gain).connect(master);
+    osc.start();
+    return { osc, gain };
+  }
+  const padA = makePad(110, -6);
+  const padB = makePad(146.83, +4); // D3
+  const padC = makePad(196, -10);   // G3
+
+  // Crowd/arcade beeps (random blips)
+  function randomBeep(){
+    const o = ctx.createOscillator();
+    o.type = 'square'; o.frequency.value = 300 + Math.random()*600;
+    const g = ctx.createGain(); g.gain.value = 0.05;
+    o.connect(g).connect(master);
+    o.start();
+    setTimeout(()=>{ o.stop(); }, 120 + Math.random()*200);
+  }
+  setInterval(()=>{ if(audioOn && Math.random()<0.35) randomBeep(); }, 600);
+
+  function toggleAudio(){
+    audioOn = !audioOn;
+    if(audioOn) ctx.resume(); else ctx.suspend();
+    startAudioBtn.textContent = audioOn ? '🔈 Audio On (click to Mute)' : '🔊 Toggle Audio';
+  }
+  document.getElementById('startAudio').onclick = toggleAudio;
+
+  // Resize
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+})();
+</script>
+</body>
+</html>
